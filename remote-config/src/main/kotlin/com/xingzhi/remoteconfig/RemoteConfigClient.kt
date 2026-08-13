@@ -20,10 +20,9 @@ class RemoteConfigClient<T>(
     /** Loads the last known-good snapshot from local storage. */
     suspend fun load(): Result<StoredConfig<T>?> = runCatching {
         store.load()?.let { snapshot ->
-            StoredConfig(
-                value = decode(snapshot),
-                snapshot = snapshot,
-            )
+            val decoded = decode(snapshot)
+            validate(snapshot, decoded)
+            StoredConfig(value = decoded, snapshot = snapshot)
         }
     }
 
@@ -37,11 +36,7 @@ class RemoteConfigClient<T>(
         runCatching {
             val snapshot = source.fetch(key)
             val decoded = decode(snapshot)
-            try {
-                validator.validate(snapshot, decoded)
-            } catch (error: Throwable) {
-                throw RemoteConfigException.ValidationFailed(error)
-            }
+            validate(snapshot, decoded)
             try {
                 store.save(snapshot)
             } catch (error: Throwable) {
@@ -55,5 +50,13 @@ class RemoteConfigClient<T>(
         decoder.decode(snapshot.content)
     } catch (error: Throwable) {
         throw RemoteConfigException.DecodeFailed(error)
+    }
+
+    private suspend fun validate(snapshot: ConfigSnapshot, decoded: T) {
+        try {
+            validator.validate(snapshot, decoded)
+        } catch (error: Throwable) {
+            throw RemoteConfigException.ValidationFailed(error)
+        }
     }
 }

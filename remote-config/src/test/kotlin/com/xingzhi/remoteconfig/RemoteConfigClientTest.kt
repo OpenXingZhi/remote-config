@@ -47,6 +47,21 @@ class RemoteConfigClientTest {
     }
 
     @Test
+    fun `load revalidates persisted snapshot before returning it`() = runTest {
+        val store = RecordingStore(snapshot = ConfigSnapshot("tampered".encodeToByteArray()))
+        val client = RemoteConfigClient(
+            source = ConfigSource { error("unused") },
+            store = store,
+            decoder = ConfigDecoder(ByteArray::decodeToString),
+            validator = ConfigValidator { _, _ -> error("invalid signature") },
+        )
+
+        val result = client.load()
+
+        assertIs<RemoteConfigException.ValidationFailed>(result.exceptionOrNull())
+    }
+
+    @Test
     fun `decode failure does not invoke validator or store`() = runTest {
         var validated = false
         val store = RecordingStore()
