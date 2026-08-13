@@ -8,7 +8,7 @@ The module guarantees the refresh order:
 fetch complete snapshot → decode → validate → atomic commit → return new value
 ```
 
-A failed fetch, parse, signature check, or business validation never replaces the last known-good snapshot.
+A failed fetch, parse, signature check, business validation, or monotonic revision check never replaces the last known-good snapshot. Persisted snapshots are revalidated on load, coroutine cancellation is preserved, and the HTTP adapter bounds response size.
 
 ## Dependency
 
@@ -18,7 +18,7 @@ maven {
     credentials(PasswordCredentials::class)
 }
 
-implementation("com.xingzhi:remote-config:1.0.0")
+implementation("com.xingzhi:remote-config:1.1.0")
 ```
 
 ## Interface
@@ -39,6 +39,7 @@ val client = RemoteConfigClient(
         ).getOrThrow()
         validateApplicationPolicy(config)
     },
+    revisionPolicy = MonotonicLongRevisionPolicy { config -> config.revision },
 )
 
 val local = client.load().getOrThrow()

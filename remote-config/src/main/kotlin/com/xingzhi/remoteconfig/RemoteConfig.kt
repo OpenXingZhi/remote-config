@@ -47,6 +47,29 @@ fun interface ConfigValidator<T> {
     suspend fun validate(snapshot: ConfigSnapshot, decoded: T)
 }
 
+/** Policy comparing an authenticated candidate with the last authenticated local value. */
+fun interface ConfigRevisionPolicy<T> {
+    fun validate(current: StoredConfig<T>?, candidate: StoredConfig<T>)
+}
+
+/** Rejects lower revisions and same-revision content changes while allowing idempotent refreshes. */
+class MonotonicLongRevisionPolicy<T>(
+    private val revisionOf: (T) -> Long,
+) : ConfigRevisionPolicy<T> {
+    override fun validate(current: StoredConfig<T>?, candidate: StoredConfig<T>) {
+        if (current == null) return
+        val currentRevision = revisionOf(current.value)
+        val candidateRevision = revisionOf(candidate.value)
+        require(candidateRevision >= currentRevision) {
+            "Configuration revision $candidateRevision is older than $currentRevision."
+        }
+        require(
+            candidateRevision != currentRevision ||
+                candidate.snapshot.content.contentEquals(current.snapshot.content)
+        ) { "Configuration content changed without advancing revision $candidateRevision." }
+    }
+}
+
 /** A locally committed, parsed configuration. */
 data class StoredConfig<T>(
     val value: T,
@@ -63,4 +86,7 @@ sealed class RemoteConfigException(message: String, cause: Throwable? = null) :
 
     class StoreFailed(cause: Throwable) :
         RemoteConfigException("Remote configuration could not be committed.", cause)
+
+    class RollbackRejected(cause: Throwable) :
+        RemoteConfigException("Remote configuration revision was rejected.", cause)
 }

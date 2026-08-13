@@ -1,6 +1,7 @@
 package com.xingzhi.remoteconfig
 
 import java.nio.file.Files
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -77,6 +78,63 @@ class RemoteConfigClientTest {
         assertIs<RemoteConfigException.DecodeFailed>(result.exceptionOrNull())
         assertTrue(!validated)
         assertNull(store.snapshot)
+    }
+
+    @Test
+    fun `rejects older and same revision with changed content`() = runTest {
+        data class Versioned(val revision: Long, val content: String)
+        fun snapshot(revision: Long, content: String) =
+            ConfigSnapshot("$revision:$content".encodeToByteArray())
+        val old = snapshot(2, "accepted")
+        val store = RecordingStore(snapshot = old)
+        var candidate = snapshot(1, "older")
+        val client = RemoteConfigClient(
+            source = ConfigSource { candidate },
+            store = store,
+            decoder = ConfigDecoder { bytes ->
+                bytes.decodeToString().split(':', limit = 2).let { Versioned(it[0].toLong(), it[1]) }
+            },
+            revisionPolicy = MonotonicLongRevisionPolicy(Versioned::revision),
+        )
+
+        assertIs<RemoteConfigException.RollbackRejected>(
+            client.refresh("device").exceptionOrNull()
+        )
+        candidate = snapshot(2, "changed-without-version")
+        assertIs<RemoteConfigException.RollbackRejected>(
+            client.refresh("device").exceptionOrNull()
+        )
+        assertEquals(old, store.snapshot)
+    }
+
+    @Test
+    fun `allows idempotent refresh and a newer revision`() = runTest {
+        data class Versioned(val revision: Long)
+        val old = ConfigSnapshot("2".encodeToByteArray())
+        val store = RecordingStore(snapshot = old)
+        var candidate = old
+        val client = RemoteConfigClient(
+            source = ConfigSource { candidate },
+            store = store,
+            decoder = ConfigDecoder { Versioned(it.decodeToString().toLong()) },
+            revisionPolicy = MonotonicLongRevisionPolicy(Versioned::revision),
+        )
+
+        assertTrue(client.refresh("device").isSuccess)
+        candidate = ConfigSnapshot("3".encodeToByteArray())
+        assertTrue(client.refresh("device").isSuccess)
+        assertEquals(candidate, store.snapshot)
+    }
+
+    @Test
+    fun `does not convert cancellation into failure`() = runTest {
+        val client = RemoteConfigClient(
+            source = ConfigSource { throw CancellationException("cancel") },
+            store = RecordingStore(),
+            decoder = ConfigDecoder(ByteArray::decodeToString),
+        )
+
+        assertFailsWith<CancellationException> { client.refresh("device") }
     }
 
     @Test
