@@ -2,13 +2,13 @@
 
 Transactional remote configuration for XingZhi JVM and Android applications.
 
-The module guarantees the refresh order:
+The module commits every snapshot in this order:
 
 ```text
-fetch complete snapshot → decode → validate → atomic commit → return new value
+decode → validate → revision check → atomic commit → return new value
 ```
 
-A failed fetch, parse, signature check, business validation, or monotonic revision check never replaces the last known-good snapshot. Persisted snapshots are revalidated on load, coroutine cancellation is preserved, and the HTTP adapter bounds response size.
+`refresh(key)` fetches first, `import(snapshot)` accepts a complete snapshot already in hand, and `reload()` revalidates the persisted snapshot. A failed fetch, parse, signature check, business validation, or monotonic revision check never replaces the last known-good snapshot. Persisted snapshots are revalidated on load, coroutine cancellation is preserved, and the HTTP adapter bounds response size.
 
 ## Dependency
 
@@ -18,7 +18,7 @@ maven {
     credentials(PasswordCredentials::class)
 }
 
-implementation("com.xingzhi:remote-config:1.1.0")
+implementation("com.xingzhi:remote-config:1.2.0")
 ```
 
 ## Interface
@@ -44,6 +44,8 @@ val client = RemoteConfigClient(
 
 val local = client.load().getOrThrow()
 val updated = client.refresh(deviceSerialNumber).getOrThrow()
+val imported = client.import(snapshot).getOrThrow()
+val reloaded = client.reload().getOrThrow()
 ```
 
 The module does not depend on a configuration schema, DI framework, UI toolkit, license policy, or hosting vendor. Applications supply adapters for parsing and validation. Public trust roots should be bundled with the application or pinned independently, not downloaded from the same mutable origin as configuration.

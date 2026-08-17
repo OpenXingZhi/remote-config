@@ -127,6 +127,94 @@ class RemoteConfigClientTest {
     }
 
     @Test
+    fun `imports provided snapshot without fetching`() = runTest {
+        val events = mutableListOf<String>()
+        val snapshot = ConfigSnapshot("imported".encodeToByteArray(), "sig".encodeToByteArray())
+        val store = RecordingStore(events)
+        val client = RemoteConfigClient(
+            source = ConfigSource { events += "fetch"; error("unused") },
+            store = store,
+            decoder = ConfigDecoder { events += "decode"; it.decodeToString() },
+            validator = ConfigValidator { _, value -> events += "validate:$value" },
+        )
+
+        val result = client.import(snapshot)
+
+        assertEquals("imported", result.getOrThrow().value)
+        assertEquals(listOf("decode", "validate:imported", "save"), events)
+        assertEquals(snapshot, store.snapshot)
+    }
+
+    @Test
+    fun `import rejects older revision and keeps last known good snapshot`() = runTest {
+        data class Versioned(val revision: Long)
+        val accepted = ConfigSnapshot("2".encodeToByteArray())
+        val store = RecordingStore(snapshot = accepted)
+        val client = RemoteConfigClient(
+            source = ConfigSource { error("unused") },
+            store = store,
+            decoder = ConfigDecoder { Versioned(it.decodeToString().toLong()) },
+            revisionPolicy = MonotonicLongRevisionPolicy(Versioned::revision),
+        )
+
+        val result = client.import(ConfigSnapshot("1".encodeToByteArray()))
+
+        assertIs<RemoteConfigException.RollbackRejected>(result.exceptionOrNull())
+        assertEquals(accepted, store.snapshot)
+    }
+
+    @Test
+    fun `reload returns null when the store is empty`() = runTest {
+        val events = mutableListOf<String>()
+        val client = RemoteConfigClient(
+            source = ConfigSource { events += "fetch"; error("unused") },
+            store = RecordingStore(events),
+            decoder = ConfigDecoder { events += "decode"; it.decodeToString() },
+        )
+
+        val result = client.reload()
+
+        assertNull(result.getOrThrow())
+        assertEquals(emptyList(), events)
+    }
+
+    @Test
+    fun `reload revalidates the stored snapshot before returning it`() = runTest {
+        val events = mutableListOf<String>()
+        val snapshot = ConfigSnapshot("local".encodeToByteArray())
+        val store = RecordingStore(events, snapshot)
+        val client = RemoteConfigClient(
+            source = ConfigSource { events += "fetch"; error("unused") },
+            store = store,
+            decoder = ConfigDecoder { events += "decode"; it.decodeToString() },
+            validator = ConfigValidator { _, value -> events += "validate:$value" },
+        )
+
+        val result = client.reload()
+
+        assertEquals("local", result.getOrThrow()?.value)
+        assertEquals(listOf("decode", "validate:local", "save"), events)
+        assertEquals(snapshot, store.snapshot)
+    }
+
+    @Test
+    fun `reload validation failure keeps last known good snapshot`() = runTest {
+        val accepted = ConfigSnapshot("accepted".encodeToByteArray())
+        val store = RecordingStore(snapshot = accepted)
+        val client = RemoteConfigClient(
+            source = ConfigSource { error("unused") },
+            store = store,
+            decoder = ConfigDecoder(ByteArray::decodeToString),
+            validator = ConfigValidator { _, _ -> error("invalid signature") },
+        )
+
+        val result = client.reload()
+
+        assertIs<RemoteConfigException.ValidationFailed>(result.exceptionOrNull())
+        assertEquals(accepted, store.snapshot)
+    }
+
+    @Test
     fun `does not convert cancellation into failure`() = runTest {
         val client = RemoteConfigClient(
             source = ConfigSource { throw CancellationException("cancel") },

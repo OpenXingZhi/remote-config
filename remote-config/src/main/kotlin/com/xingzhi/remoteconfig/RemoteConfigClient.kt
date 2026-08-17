@@ -25,32 +25,56 @@ class RemoteConfigClient<T>(
     }
 
     /**
+     * Commits [snapshot] as one transaction: decode → validate → revision check → save.
+     *
+     * Use this for a complete snapshot already in hand, such as a field import or a
+     * single-file watcher payload. The remote source is not consulted.
+     */
+    suspend fun import(snapshot: ConfigSnapshot): Result<StoredConfig<T>> = refreshMutex.withLock {
+        resultOf { commit(snapshot) }
+    }
+
+    /**
+     * Revalidates the persisted snapshot and rewrites it only if the complete transaction succeeds.
+     */
+    suspend fun reload(): Result<StoredConfig<T>?> = refreshMutex.withLock {
+        resultOf {
+            val snapshot = store.load() ?: return@resultOf null
+            commit(snapshot, checkRevisionAgainstStore = false)
+        }
+    }
+
+    /**
      * Refreshes [key] as one transaction: fetch → decode → validate → revision check → commit.
      */
     suspend fun refresh(key: String): Result<StoredConfig<T>> = refreshMutex.withLock {
-        resultOf {
-            val snapshot = source.fetch(key)
-            val candidate = StoredConfig(decode(snapshot), snapshot)
-            validate(candidate.snapshot, candidate.value)
+        resultOf { commit(source.fetch(key)) }
+    }
 
-            revisionPolicy?.let { policy ->
-                val current = loadValidated()
-                try {
-                    policy.validate(current, candidate)
-                } catch (error: Throwable) {
-                    error.rethrowCancellation()
-                    throw RemoteConfigException.RollbackRejected(error)
-                }
-            }
+    private suspend fun commit(
+        snapshot: ConfigSnapshot,
+        checkRevisionAgainstStore: Boolean = true,
+    ): StoredConfig<T> {
+        val candidate = StoredConfig(decode(snapshot), snapshot)
+        validate(candidate.snapshot, candidate.value)
 
+        revisionPolicy?.let { policy ->
+            val current = if (checkRevisionAgainstStore) loadValidated() else null
             try {
-                store.save(snapshot)
+                policy.validate(current, candidate)
             } catch (error: Throwable) {
                 error.rethrowCancellation()
-                throw RemoteConfigException.StoreFailed(error)
+                throw RemoteConfigException.RollbackRejected(error)
             }
-            candidate
         }
+
+        try {
+            store.save(snapshot)
+        } catch (error: Throwable) {
+            error.rethrowCancellation()
+            throw RemoteConfigException.StoreFailed(error)
+        }
+        return candidate
     }
 
     private suspend fun loadValidated(): StoredConfig<T>? = store.load()?.let { snapshot ->
