@@ -1,16 +1,22 @@
 package com.xingzhi.remoteconfig
 
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.net.URI
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 
 /** HTTP adapter for conventional content and detached-signature resources. */
 class HttpConfigSource(
@@ -35,8 +41,8 @@ class HttpConfigSource(
         )
     }
 
-    private fun download(uri: URI, onMissing: () -> Throwable): ByteArray =
-        getBytes(callFactory, uri, maxResponseBytes, onMissing)
+    private suspend fun download(uri: URI, onMissing: () -> Throwable): ByteArray =
+        awaitBytes(callFactory, uri, maxResponseBytes, onMissing)
 
     companion object {
         const val DEFAULT_MAX_RESPONSE_BYTES: Int = 4 * 1024 * 1024
@@ -68,23 +74,56 @@ internal fun getBytes(
     maxBytes: Int,
     onMissing: (() -> Throwable)? = null,
 ): ByteArray {
-    val response = callFactory.newCall(
-        Request.Builder().url(uri.toURL()).get().build(),
-    ).execute()
-    response.use {
-        if (it.code == 404 && onMissing != null) {
-            throw onMissing()
+    val response = newGetCall(callFactory, uri).execute()
+    return response.use { readBoundedBody(it, uri, maxBytes, onMissing) }
+}
+
+internal suspend fun awaitBytes(
+    callFactory: Call.Factory,
+    uri: URI,
+    maxBytes: Int,
+    onMissing: (() -> Throwable)? = null,
+): ByteArray = suspendCancellableCoroutine { continuation ->
+    val call = newGetCall(callFactory, uri)
+    continuation.invokeOnCancellation { call.cancel() }
+    call.enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            if (continuation.isCancelled) return
+            continuation.resumeWithException(e)
         }
-        check(it.isSuccessful) { "GET $uri failed with HTTP ${it.code}." }
-        val body = checkNotNull(it.body)
-        val declared = body.contentLength()
-        require(declared < 0 || declared <= maxBytes) {
-            "GET $uri response is too large: $declared bytes."
+
+        override fun onResponse(call: Call, response: Response) {
+            val result = runCatching { response.use { readBoundedBody(it, uri, maxBytes, onMissing) } }
+            if (continuation.isCancelled) return
+            result.fold(
+                onSuccess = { continuation.resume(it) },
+                onFailure = { continuation.resumeWithException(it) },
+            )
         }
-        val bytes = body.byteStream().use { stream -> stream.readAtMost(maxBytes) }
-        check(bytes.size <= maxBytes) { "GET $uri response exceeds $maxBytes bytes." }
-        return bytes
+    })
+}
+
+private fun newGetCall(callFactory: Call.Factory, uri: URI): Call =
+    callFactory.newCall(Request.Builder().url(uri.toURL()).get().build())
+
+private fun readBoundedBody(
+    response: Response,
+    uri: URI,
+    maxBytes: Int,
+    onMissing: (() -> Throwable)?,
+): ByteArray {
+    if (response.code == 404 && onMissing != null) {
+        throw onMissing()
     }
+    check(response.isSuccessful) { "GET $uri failed with HTTP ${response.code}." }
+    val body = checkNotNull(response.body)
+    val declared = body.contentLength()
+    require(declared < 0 || declared <= maxBytes) {
+        "GET $uri response is too large: $declared bytes."
+    }
+    val bytes = body.byteStream().use { stream -> stream.readAtMost(maxBytes) }
+    check(bytes.size <= maxBytes) { "GET $uri response exceeds $maxBytes bytes." }
+    return bytes
 }
 
 private fun java.io.InputStream.readAtMost(limit: Int): ByteArray {

@@ -18,7 +18,7 @@ maven {
     credentials(PasswordCredentials::class)
 }
 
-implementation("com.xingzhi:remote-config:1.3.0")
+implementation("com.xingzhi:remote-config:1.3.1")
 ```
 
 ## Interface

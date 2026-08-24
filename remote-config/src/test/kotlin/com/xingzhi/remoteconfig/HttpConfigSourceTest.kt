@@ -1,14 +1,21 @@
 package com.xingzhi.remoteconfig
 
 import java.net.URI
-import kotlinx.coroutines.test.runTest
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
-import org.junit.jupiter.api.Test
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import org.junit.jupiter.api.Test
 
 class HttpConfigSourceTest {
     @Test
@@ -101,6 +108,27 @@ class HttpConfigSourceTest {
             }
 
             assertTrue(error.message!!.contains("503"))
+        }
+    }
+
+    @Test
+    fun `cancelling fetch aborts the in-flight request`() = runBlocking {
+        MockWebServer().use { server ->
+            val source = HttpConfigSource(
+                contentUri = { URI(server.url("$it.yml").toString()) },
+                signatureUri = { URI(server.url("$it.yml.asc").toString()) },
+            )
+            val job = launch(Dispatchers.IO) {
+                source.fetch("device")
+            }
+            try {
+                assertNotNull(server.takeRequest(2, TimeUnit.SECONDS))
+                withTimeout(2_000) {
+                    job.cancelAndJoin()
+                }
+            } finally {
+                job.cancel()
+            }
         }
     }
 }
