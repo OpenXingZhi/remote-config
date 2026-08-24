@@ -1,14 +1,16 @@
 package com.xingzhi.remoteconfig
 
 import java.io.ByteArrayOutputStream
-import java.io.InputStream
-import java.net.HttpURLConnection
 import java.net.URI
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 /** HTTP adapter for conventional content and detached-signature resources. */
 class HttpConfigSource(
@@ -18,6 +20,7 @@ class HttpConfigSource(
     private val readTimeout: Duration = 30.seconds,
     private val maxResponseBytes: Int = DEFAULT_MAX_RESPONSE_BYTES,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val callFactory: Call.Factory = defaultCallFactory(connectTimeout, readTimeout),
 ) : ConfigSource {
     init {
         require(maxResponseBytes > 0) { "maxResponseBytes must be positive." }
@@ -25,45 +28,75 @@ class HttpConfigSource(
 
     override suspend fun fetch(key: String): ConfigSnapshot = withContext(dispatcher) {
         ConfigSnapshot(
-            content = download(contentUri(key)),
-            signature = signatureUri?.let { download(it(key)) },
+            content = download(contentUri(key)) { RemoteConfigException.NotFound() },
+            signature = signatureUri?.let {
+                download(it(key)) { RemoteConfigException.SignatureNotFound() }
+            },
         )
     }
 
-    private fun download(uri: URI): ByteArray {
-        val connection = uri.toURL().openConnection() as HttpURLConnection
-        connection.connectTimeout = connectTimeout.inWholeMilliseconds.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        connection.readTimeout = readTimeout.inWholeMilliseconds.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        connection.instanceFollowRedirects = true
-        connection.requestMethod = "GET"
-        return try {
-            val code = connection.responseCode
-            check(code in 200..299) { "GET $uri failed with HTTP $code." }
-            val declaredLength = connection.contentLengthLong
-            require(declaredLength < 0 || declaredLength <= maxResponseBytes) {
-                "GET $uri response is too large: $declaredLength bytes."
-            }
-            connection.inputStream.use { it.readAtMost(maxResponseBytes) }
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun InputStream.readAtMost(limit: Int): ByteArray {
-        val output = ByteArrayOutputStream(minOf(limit, DEFAULT_BUFFER_SIZE))
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        var total = 0
-        while (true) {
-            val read = read(buffer)
-            if (read < 0) break
-            total += read
-            require(total <= limit) { "HTTP response exceeds $limit bytes." }
-            output.write(buffer, 0, read)
-        }
-        return output.toByteArray()
-    }
+    private fun download(uri: URI, onMissing: () -> Throwable): ByteArray =
+        getBytes(callFactory, uri, maxResponseBytes, onMissing)
 
     companion object {
         const val DEFAULT_MAX_RESPONSE_BYTES: Int = 4 * 1024 * 1024
+        const val DEFAULT_PUBLIC_KEY_BYTES: Int = 64 * 1024
+
+        fun defaultCallFactory(
+            connectTimeout: Duration = 10.seconds,
+            readTimeout: Duration = 30.seconds,
+        ): Call.Factory = OkHttpClient.Builder()
+            .connectTimeout(connectTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
+            .readTimeout(readTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
     }
+}
+
+/** Bounded GET for small documents such as a pinned OpenPGP certificate. */
+class OkHttpFetcher(
+    private val callFactory: Call.Factory = HttpConfigSource.defaultCallFactory(),
+    private val maxBytes: Int = HttpConfigSource.DEFAULT_PUBLIC_KEY_BYTES,
+) {
+    fun get(uri: URI): ByteArray = getBytes(callFactory, uri, maxBytes)
+}
+
+internal fun getBytes(
+    callFactory: Call.Factory,
+    uri: URI,
+    maxBytes: Int,
+    onMissing: (() -> Throwable)? = null,
+): ByteArray {
+    val response = callFactory.newCall(
+        Request.Builder().url(uri.toURL()).get().build(),
+    ).execute()
+    response.use {
+        if (it.code == 404 && onMissing != null) {
+            throw onMissing()
+        }
+        check(it.isSuccessful) { "GET $uri failed with HTTP ${it.code}." }
+        val body = checkNotNull(it.body)
+        val declared = body.contentLength()
+        require(declared < 0 || declared <= maxBytes) {
+            "GET $uri response is too large: $declared bytes."
+        }
+        val bytes = body.byteStream().use { stream -> stream.readAtMost(maxBytes) }
+        check(bytes.size <= maxBytes) { "GET $uri response exceeds $maxBytes bytes." }
+        return bytes
+    }
+}
+
+private fun java.io.InputStream.readAtMost(limit: Int): ByteArray {
+    val output = ByteArrayOutputStream(minOf(limit, DEFAULT_BUFFER_SIZE))
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var total = 0
+    while (true) {
+        val read = read(buffer)
+        if (read < 0) break
+        total += read
+        require(total <= limit) { "HTTP response exceeds $limit bytes." }
+        output.write(buffer, 0, read)
+    }
+    return output.toByteArray()
 }

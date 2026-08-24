@@ -18,7 +18,7 @@ maven {
     credentials(PasswordCredentials::class)
 }
 
-implementation("com.xingzhi:remote-config:1.2.0")
+implementation("com.xingzhi:remote-config:1.3.0")
 ```
 
 ## Interface
@@ -47,5 +47,9 @@ val updated = client.refresh(deviceSerialNumber).getOrThrow()
 val imported = client.import(snapshot).getOrThrow()
 val reloaded = client.reload().getOrThrow()
 ```
+
+`HttpConfigSource` uses OkHttp so cross-host redirects (for example Gitee raw → `raw.giteeusercontent.com`) are followed. HTTP 404 on the content file becomes [RemoteConfigException.NotFound]; HTTP 404 on the detached signature becomes [RemoteConfigException.SignatureNotFound]. Other transport failures stay as `IOException` / `IllegalStateException` and must not be shown as user-facing text.
+
+`OkHttpFetcher` is the same bounded GET for small documents such as a pinned OpenPGP certificate. A missing key file is a transport failure, not [RemoteConfigException.NotFound].
 
 The module does not depend on a configuration schema, DI framework, UI toolkit, license policy, or hosting vendor. Applications supply adapters for parsing and validation. Public trust roots should be bundled with the application or pinned independently, not downloaded from the same mutable origin as configuration.

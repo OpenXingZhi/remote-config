@@ -78,6 +78,12 @@ data class StoredConfig<T>(
 
 sealed class RemoteConfigException(message: String, cause: Throwable? = null) :
     Exception(message, cause) {
+    class NotFound(cause: Throwable? = null) :
+        RemoteConfigException("Remote configuration was not found.", cause)
+
+    class SignatureNotFound(cause: Throwable? = null) :
+        RemoteConfigException("Remote configuration signature was not found.", cause)
+
     class DecodeFailed(cause: Throwable) :
         RemoteConfigException("Remote configuration could not be decoded.", cause)
 
