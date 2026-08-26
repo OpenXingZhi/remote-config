@@ -48,6 +48,19 @@ class RemoteConfigClientTest {
     }
 
     @Test
+    fun `typed remote config exception from validator is preserved`() = runTest {
+        val expected = RemoteConfigException.SignatureNotFound()
+        val client = RemoteConfigClient(
+            source = ConfigSource { ConfigSnapshot("unsigned".encodeToByteArray()) },
+            store = RecordingStore(),
+            decoder = ConfigDecoder(ByteArray::decodeToString),
+            validator = ConfigValidator { _, _ -> throw expected },
+        )
+
+        assertEquals(expected, client.refresh("device").exceptionOrNull())
+    }
+
+    @Test
     fun `load revalidates persisted snapshot before returning it`() = runTest {
         val store = RecordingStore(snapshot = ConfigSnapshot("tampered".encodeToByteArray()))
         val client = RemoteConfigClient(
@@ -223,6 +236,41 @@ class RemoteConfigClientTest {
         )
 
         assertFailsWith<CancellationException> { client.refresh("device") }
+    }
+
+    @Test
+    fun `wraps source failure as FetchFailed and preserves cause`() = runTest {
+        val cause = IllegalStateException("transport detail")
+        val client = RemoteConfigClient(
+            source = ConfigSource { throw cause },
+            store = RecordingStore(),
+            decoder = ConfigDecoder(ByteArray::decodeToString),
+        )
+
+        val error = assertIs<RemoteConfigException.FetchFailed>(
+            client.refresh("device").exceptionOrNull(),
+        )
+
+        assertEquals(cause, error.cause)
+    }
+
+    @Test
+    fun `wraps store load failure as StoreFailed and preserves cause`() = runTest {
+        val cause = IllegalStateException("disk detail")
+        val client = RemoteConfigClient(
+            source = ConfigSource { error("unused") },
+            store = object : ConfigStore {
+                override suspend fun load(): ConfigSnapshot? = throw cause
+                override suspend fun save(snapshot: ConfigSnapshot) = Unit
+            },
+            decoder = ConfigDecoder(ByteArray::decodeToString),
+        )
+
+        val error = assertIs<RemoteConfigException.StoreFailed>(
+            client.load().exceptionOrNull(),
+        )
+
+        assertEquals(cause, error.cause)
     }
 
     @Test

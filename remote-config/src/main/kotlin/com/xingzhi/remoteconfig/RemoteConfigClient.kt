@@ -39,7 +39,7 @@ class RemoteConfigClient<T>(
      */
     suspend fun reload(): Result<StoredConfig<T>?> = refreshMutex.withLock {
         resultOf {
-            val snapshot = store.load() ?: return@resultOf null
+            val snapshot = loadSnapshot() ?: return@resultOf null
             commit(snapshot, checkRevisionAgainstStore = false)
         }
     }
@@ -48,7 +48,15 @@ class RemoteConfigClient<T>(
      * Refreshes [key] as one transaction: fetch → decode → validate → revision check → commit.
      */
     suspend fun refresh(key: String): Result<StoredConfig<T>> = refreshMutex.withLock {
-        resultOf { commit(source.fetch(key)) }
+        resultOf { commit(fetch(key)) }
+    }
+
+    private suspend fun fetch(key: String): ConfigSnapshot = try {
+        source.fetch(key)
+    } catch (error: Throwable) {
+        error.rethrowCancellation()
+        if (error is RemoteConfigException) throw error
+        throw RemoteConfigException.FetchFailed(error)
     }
 
     private suspend fun commit(
@@ -64,6 +72,7 @@ class RemoteConfigClient<T>(
                 policy.validate(current, candidate)
             } catch (error: Throwable) {
                 error.rethrowCancellation()
+                if (error is RemoteConfigException) throw error
                 throw RemoteConfigException.RollbackRejected(error)
             }
         }
@@ -72,21 +81,31 @@ class RemoteConfigClient<T>(
             store.save(snapshot)
         } catch (error: Throwable) {
             error.rethrowCancellation()
+            if (error is RemoteConfigException) throw error
             throw RemoteConfigException.StoreFailed(error)
         }
         return candidate
     }
 
-    private suspend fun loadValidated(): StoredConfig<T>? = store.load()?.let { snapshot ->
+    private suspend fun loadValidated(): StoredConfig<T>? = loadSnapshot()?.let { snapshot ->
         val decoded = decode(snapshot)
         validate(snapshot, decoded)
         StoredConfig(value = decoded, snapshot = snapshot)
+    }
+
+    private suspend fun loadSnapshot(): ConfigSnapshot? = try {
+        store.load()
+    } catch (error: Throwable) {
+        error.rethrowCancellation()
+        if (error is RemoteConfigException) throw error
+        throw RemoteConfigException.StoreFailed(error)
     }
 
     private fun decode(snapshot: ConfigSnapshot): T = try {
         decoder.decode(snapshot.content)
     } catch (error: Throwable) {
         error.rethrowCancellation()
+        if (error is RemoteConfigException) throw error
         throw RemoteConfigException.DecodeFailed(error)
     }
 
@@ -95,6 +114,7 @@ class RemoteConfigClient<T>(
             validator.validate(snapshot, decoded)
         } catch (error: Throwable) {
             error.rethrowCancellation()
+            if (error is RemoteConfigException) throw error
             throw RemoteConfigException.ValidationFailed(error)
         }
     }

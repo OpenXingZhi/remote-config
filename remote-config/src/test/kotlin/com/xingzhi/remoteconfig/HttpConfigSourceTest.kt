@@ -94,7 +94,7 @@ class HttpConfigSourceTest {
     }
 
     @Test
-    fun `non-404 HTTP failures keep the status and are not NotFound`() = runTest {
+    fun `non-404 HTTP failures become FetchFailed and preserve technical cause`() = runTest {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(503).setBody("unavailable"))
 
@@ -103,11 +103,11 @@ class HttpConfigSourceTest {
                 signatureUri = { URI(server.url("$it.yml.asc").toString()) },
             )
 
-            val error = assertFailsWith<IllegalStateException> {
+            val error = assertFailsWith<RemoteConfigException.FetchFailed> {
                 source.fetch("device")
             }
 
-            assertTrue(error.message!!.contains("503"))
+            assertTrue(error.cause?.message.orEmpty().contains("503"))
         }
     }
 

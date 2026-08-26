@@ -78,6 +78,9 @@ data class StoredConfig<T>(
 
 sealed class RemoteConfigException(message: String, cause: Throwable? = null) :
     Exception(message, cause) {
+    class FetchFailed(cause: Throwable) :
+        RemoteConfigException("Remote configuration fetch failed.", cause)
+
     class NotFound(cause: Throwable? = null) :
         RemoteConfigException("Remote configuration was not found.", cause)
 
@@ -96,3 +99,9 @@ sealed class RemoteConfigException(message: String, cause: Throwable? = null) :
     class RollbackRejected(cause: Throwable) :
         RemoteConfigException("Remote configuration revision was rejected.", cause)
 }
+
+/** Returns the first [RemoteConfigException] in this error's cause chain, if any. */
+fun Throwable.findRemoteConfigException(): RemoteConfigException? =
+    generateSequence(this) { it.cause }
+        .filterIsInstance<RemoteConfigException>()
+        .firstOrNull()

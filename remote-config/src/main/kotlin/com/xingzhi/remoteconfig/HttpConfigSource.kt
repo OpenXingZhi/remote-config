@@ -9,6 +9,7 @@ import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -32,13 +33,21 @@ class HttpConfigSource(
         require(maxResponseBytes > 0) { "maxResponseBytes must be positive." }
     }
 
-    override suspend fun fetch(key: String): ConfigSnapshot = withContext(dispatcher) {
-        ConfigSnapshot(
-            content = download(contentUri(key)) { RemoteConfigException.NotFound() },
-            signature = signatureUri?.let {
-                download(it(key)) { RemoteConfigException.SignatureNotFound() }
-            },
-        )
+    override suspend fun fetch(key: String): ConfigSnapshot = try {
+        withContext(dispatcher) {
+            ConfigSnapshot(
+                content = download(contentUri(key)) { RemoteConfigException.NotFound() },
+                signature = signatureUri?.let {
+                    download(it(key)) { RemoteConfigException.SignatureNotFound() }
+                },
+            )
+        }
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: RemoteConfigException) {
+        throw error
+    } catch (error: Throwable) {
+        throw RemoteConfigException.FetchFailed(error)
     }
 
     private suspend fun download(uri: URI, onMissing: () -> Throwable): ByteArray =
