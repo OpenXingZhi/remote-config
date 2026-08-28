@@ -8,7 +8,7 @@ The module commits every snapshot in this order:
 decode → validate → revision check → atomic commit → return new value
 ```
 
-`refresh(key)` fetches first, `import(snapshot)` accepts a complete snapshot already in hand, and `reload()` revalidates the persisted snapshot. A failed fetch, parse, signature check, business validation, or monotonic revision check never replaces the last known-good snapshot. Persisted snapshots are revalidated on load, coroutine cancellation is preserved, and the HTTP adapter bounds response size.
+`refresh(key)` fetches first, `import(snapshot)` accepts a complete snapshot already in hand, and `reload()` revalidates the persisted snapshot. A failed fetch, parse, signature check, business validation, or monotonic revision check never replaces the last known-good snapshot. If the persisted snapshot itself can no longer be decoded or validated (schema migration), revision comparison treats it as absent so a valid candidate can replace it. `load()` still reports that failure. Persisted snapshots are revalidated on load, coroutine cancellation is preserved, and the HTTP adapter bounds response size.
 
 ## Dependency
 
@@ -18,7 +18,7 @@ maven {
     credentials(PasswordCredentials::class)
 }
 
-implementation("com.xingzhi:remote-config:2.0.0")
+implementation("com.xingzhi:remote-config:2.0.1")
 ```
 
 ## Interface

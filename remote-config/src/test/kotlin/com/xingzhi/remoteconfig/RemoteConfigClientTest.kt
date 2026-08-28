@@ -140,6 +140,63 @@ class RemoteConfigClientTest {
     }
 
     @Test
+    fun `refresh replaces an undecodable local snapshot with a valid remote`() = runTest {
+        data class Versioned(val revision: Long, val body: String)
+        val stale = ConfigSnapshot("legacy".encodeToByteArray())
+        val remote = ConfigSnapshot("2:current".encodeToByteArray())
+        val store = RecordingStore(snapshot = stale)
+        val client = RemoteConfigClient(
+            source = ConfigSource { remote },
+            store = store,
+            decoder = ConfigDecoder { bytes ->
+                val text = bytes.decodeToString()
+                val parts = text.split(':', limit = 2)
+                require(parts.size == 2) { "legacy schema" }
+                Versioned(parts[0].toLong(), parts[1])
+            },
+            revisionPolicy = MonotonicLongRevisionPolicy(Versioned::revision),
+        )
+
+        val result = client.refresh("device")
+
+        assertEquals(Versioned(2, "current"), result.getOrThrow().value)
+        assertEquals(remote, store.snapshot)
+        assertEquals(Versioned(2, "current"), client.load().getOrThrow()?.value)
+    }
+
+    @Test
+    fun `refresh replaces a locally invalid snapshot with a valid remote`() = runTest {
+        val stale = ConfigSnapshot("stale".encodeToByteArray(), "old-sig".encodeToByteArray())
+        val remote = ConfigSnapshot("fresh".encodeToByteArray(), "new-sig".encodeToByteArray())
+        val store = RecordingStore(snapshot = stale)
+        val client = RemoteConfigClient(
+            source = ConfigSource { remote },
+            store = store,
+            decoder = ConfigDecoder(ByteArray::decodeToString),
+            validator = ConfigValidator { snapshot, _ ->
+                require(snapshot.signature?.decodeToString() == "new-sig") { "bad signature" }
+            },
+            revisionPolicy = MonotonicLongRevisionPolicy { 1L },
+        )
+
+        assertEquals("fresh", client.refresh("device").getOrThrow().value)
+        assertEquals(remote, store.snapshot)
+    }
+
+    @Test
+    fun `load still fails when the persisted snapshot cannot be decoded`() = runTest {
+        val store = RecordingStore(snapshot = ConfigSnapshot("legacy".encodeToByteArray()))
+        val client = RemoteConfigClient(
+            source = ConfigSource { error("unused") },
+            store = store,
+            decoder = ConfigDecoder<String> { error("legacy schema") },
+        )
+
+        assertIs<RemoteConfigException.DecodeFailed>(client.load().exceptionOrNull())
+        assertEquals("legacy", store.snapshot?.content?.decodeToString())
+    }
+
+    @Test
     fun `imports provided snapshot without fetching`() = runTest {
         val events = mutableListOf<String>()
         val snapshot = ConfigSnapshot("imported".encodeToByteArray(), "sig".encodeToByteArray())

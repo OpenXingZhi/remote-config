@@ -8,7 +8,9 @@ import kotlinx.coroutines.sync.withLock
  * Fetches, decodes, validates, checks revision ordering, and atomically commits snapshots.
  *
  * Invalid, partially fetched, or rolled-back revisions never replace the last known-good local
- * snapshot. Callers observe a new configuration only after the complete transaction succeeds.
+ * snapshot. A persisted snapshot that no longer decodes or validates is treated as absent for
+ * revision comparison so a valid candidate can replace it. Callers observe a new configuration
+ * only after the complete transaction succeeds.
  */
 class RemoteConfigClient<T>(
     private val source: ConfigSource,
@@ -67,7 +69,7 @@ class RemoteConfigClient<T>(
         validate(candidate.snapshot, candidate.value)
 
         revisionPolicy?.let { policy ->
-            val current = if (checkRevisionAgainstStore) loadValidated() else null
+            val current = if (checkRevisionAgainstStore) loadCurrentForRevisionCheck() else null
             try {
                 policy.validate(current, candidate)
             } catch (error: Throwable) {
@@ -91,6 +93,22 @@ class RemoteConfigClient<T>(
         val decoded = decode(snapshot)
         validate(snapshot, decoded)
         StoredConfig(value = decoded, snapshot = snapshot)
+    }
+
+    /**
+     * Schema or signature changes can leave a persisted snapshot unreadable.
+     * Treat that as no current revision so a valid candidate can replace it.
+     */
+    private suspend fun loadCurrentForRevisionCheck(): StoredConfig<T>? = try {
+        loadValidated()
+    } catch (error: Throwable) {
+        error.rethrowCancellation()
+        when (error) {
+            is RemoteConfigException.DecodeFailed,
+            is RemoteConfigException.ValidationFailed,
+            -> null
+            else -> throw error
+        }
     }
 
     private suspend fun loadSnapshot(): ConfigSnapshot? = try {
